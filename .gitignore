@@ -4,3 +4,9 @@ __pycache__/
 venv/
 .env
 *.log
+
+# runtime artifacts (generated per deployment, not source)
+brain.json
+lumuria_state.json
+lumuria_trades.jsonl
+*.corrupt

@@ -91,7 +91,18 @@ def main() -> None:
     p.add_argument("--telegram-chat", default="", help="overrides TELEGRAM_CHAT_ID")
     p.add_argument("--status-every", type=int, default=20,
                    help="send a Telegram status every N scan cycles")
+    p.add_argument("--brain", default="",
+                   help="evolved brain.json: applies learned entry filters")
     args = p.parse_args()
+
+    brain = None
+    if args.brain:
+        from lumuria.evolution import load_brain
+        brain = load_brain(args.brain)
+        args.min_liquidity = brain.min_liquidity
+        print(f"  loaded brain {args.brain}: min-liquidity ${brain.min_liquidity:,.0f}, "
+              f"max top holder {brain.max_top_holder:.0%}, "
+              f"learned trailing stop{brain.stop:.0%}/arm{brain.arm:.0%}/trail{brain.trail:.0%}")
 
     if args.live and not (args.keypair and args.i_understand_real_funds):
         print("Refusing --live without --keypair and --i-understand-real-funds.",
@@ -100,11 +111,13 @@ def main() -> None:
 
     rpc = args.rpc_url or solana_rpc.PUBLIC_RPC
     slippage_bps = int(args.max_slippage * 10_000)
+    decision_cfg = DecisionConfig(min_liquidity_usd=args.min_liquidity,
+                                  max_slippage_pct=args.max_slippage)
+    if brain:
+        decision_cfg.max_top_holder_pct = brain.max_top_holder
     scanner = Scanner(ScannerConfig(
         position_usd=args.per_trade_sol * 150,
-        rpc_url=rpc, slippage_bps=slippage_bps,
-        decision=DecisionConfig(min_liquidity_usd=args.min_liquidity,
-                                max_slippage_pct=args.max_slippage),
+        rpc_url=rpc, slippage_bps=slippage_bps, decision=decision_cfg,
     ))
     execer = SwapExecutor(ExecConfig(
         rpc_url=rpc, keypair_path=args.keypair, live=args.live,
