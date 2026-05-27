@@ -12,11 +12,17 @@ class PaperBroker:
     def buy(
         self, launch: TokenLaunch, usd: float, initial_risk_pct: float
     ) -> Position:
-        fill_price = launch.path[0].price * (1 + self.slippage_pct)
+        return self.buy_at_price(launch.snapshot.symbol, launch.path[0].price,
+                                 usd, initial_risk_pct)
+
+    def buy_at_price(
+        self, symbol: str, price: float, usd: float, initial_risk_pct: float
+    ) -> Position:
+        fill_price = price * (1 + self.slippage_pct)
         usd_after_fee = usd * (1 - self.fee_pct)
         tokens = usd_after_fee / fill_price
         return Position(
-            symbol=launch.snapshot.symbol,
+            symbol=symbol,
             entry_price=fill_price,
             tokens=tokens,
             cost_usd=usd,
