@@ -31,12 +31,14 @@ import time
 
 from lumuria.execution.live_executor import ExecConfig, SwapExecutor, LAMPORTS_PER_SOL
 from lumuria.explore import token_features
+from lumuria.models import Position
 from lumuria.notify import TelegramNotifier
 from lumuria.realtime import Scanner, ScannerConfig
 from lumuria.realtime.decision import DecisionConfig
 from lumuria.realtime.journal import TradeJournal
 from lumuria.realtime.store import PositionStore, StoredHolding
 from lumuria.sources import http, jupiter, solana_rpc
+from lumuria.strategies import TrailingStop
 
 
 def sell_value_sol(mint: str, tokens: int, base_url: str, slippage_bps: int) -> float | None:
@@ -136,8 +138,10 @@ def main() -> None:
                    help="required acknowledgement for --live")
     p.add_argument("--budget-sol", type=float, default=1.0)
     p.add_argument("--per-trade-sol", type=float, default=0.05)
-    p.add_argument("--take-profit", type=float, default=2.0, help="exit multiple, e.g. 2.0 = +100%%")
-    p.add_argument("--stop", type=float, default=0.6, help="exit multiple, e.g. 0.6 = -40%%")
+    # Exit = trailing stop (what the bot learned wins). A brain overrides these.
+    p.add_argument("--stop", type=float, default=0.30, help="hard stop fraction (-30%%)")
+    p.add_argument("--arm", type=float, default=0.20, help="profit before the trail arms")
+    p.add_argument("--trail", type=float, default=0.25, help="give-back from peak that exits")
     p.add_argument("--min-liquidity", type=float, default=15_000.0)
     p.add_argument("--max-slippage", type=float, default=0.08)
     p.add_argument("--interval", type=float, default=25.0, help="seconds between new-token scans")
@@ -192,12 +196,30 @@ def main() -> None:
         budget_sol=args.budget_sol, max_position_sol=args.per_trade_sol,
         slippage_bps=slippage_bps,
     ))
+    # Resolve the trailing exit the bot learned (brain) or the CLI defaults.
+    t_stop = brain.stop if brain else args.stop
+    t_arm = brain.arm if brain else args.arm
+    t_trail = brain.trail if brain else args.trail
+
     store = PositionStore(args.state_file)
     holdings = store.load()
     notifier = TelegramNotifier(
         args.telegram_token or os.getenv("TELEGRAM_BOT_TOKEN", ""),
         args.telegram_chat or os.getenv("TELEGRAM_CHAT_ID", ""))
     journal = TradeJournal(args.journal_file)
+
+    # Per-position trailing exit state (price = the holding's SOL value).
+    exits: dict[str, tuple[Position, TrailingStop]] = {}
+
+    def make_exit(h: StoredHolding) -> tuple[Position, TrailingStop]:
+        pos = Position(symbol=h.symbol, entry_price=h.sol_in, tokens=1.0,
+                       cost_usd=h.sol_in, initial_tokens=1.0,
+                       initial_risk_pct=t_stop,
+                       peak_price=max(h.peak_value_sol, h.sol_in))
+        return pos, TrailingStop(t_stop, t_arm, t_trail)
+
+    for _mint, _h in holdings.items():  # rebuild exit engines for resumed positions
+        exits[_mint] = make_exit(_h)
 
     if args.live:
         try:
@@ -211,7 +233,7 @@ def main() -> None:
     print("=" * 62)
     print(f"  LUMURIA TURBOBOT — live operation  [{mode}]")
     print(f"  budget {args.budget_sol} SOL | per trade {args.per_trade_sol} SOL "
-          f"| TP x{args.take_profit} | SL x{args.stop}")
+          f"| trailing stop{t_stop:.0%}/arm{t_arm:.0%}/trail{t_trail:.0%}")
     if holdings:
         print(f"  resumed with {len(holdings)} open position(s) from {args.state_file}")
     print(f"  telegram: {'on' if notifier.enabled else 'off'}")
@@ -236,30 +258,34 @@ def main() -> None:
                 print(f"[TRAP ] {h.symbol:<10} no sell route now (honeypot realized)")
                 notifier.trap(h.symbol)
                 continue
-            h.peak_value_sol = max(h.peak_value_sol, val)
-            if val >= args.take_profit * h.sol_in or val <= args.stop * h.sol_in:
-                sell_tokens = h.tokens
-                if args.live:  # sell exactly what we actually hold on-chain
-                    try:
-                        sell_tokens = execer.token_balance(mint) or h.tokens
-                    except http.SourceError:
-                        pass
-                res = execer.sell(mint, sell_tokens)
-                if res.ok or res.dry_run:
-                    got = res.out_amount / LAMPORTS_PER_SOL if res.ok else val
-                    realized_sol += got
-                    tag = "TP" if val >= args.take_profit * h.sol_in else "SL"
-                    pnl = got - h.sol_in
-                    risk = h.sol_in * (1 - args.stop)
-                    print(f"[SELL {tag}] {h.symbol:<10} {h.sol_in:.4f}->{got:.4f} SOL "
-                          f"({pnl:+.4f})  {res.signature or res.reason}")
-                    journal.record(h.symbol, pnl, pnl / risk if risk else 0.0,
-                                   tag, features=h.features)
-                    notifier.sell(h.symbol, pnl, tag, res.dry_run)
-                    del holdings[mint]
-                    store.save(holdings)
-                else:
-                    print(f"[SELL FAIL] {h.symbol:<10} {res.reason} (will retry)")
+            pos, strat = exits[mint]
+            orders = strat.on_tick(pos, val)  # the learned trailing exit decides
+            h.peak_value_sol = pos.peak_price
+            if not orders:
+                continue
+            sell_tokens = h.tokens
+            if args.live:  # sell exactly what we actually hold on-chain
+                try:
+                    sell_tokens = execer.token_balance(mint) or h.tokens
+                except http.SourceError:
+                    pass
+            res = execer.sell(mint, sell_tokens)
+            if res.ok or res.dry_run:
+                got = res.out_amount / LAMPORTS_PER_SOL if res.ok else val
+                realized_sol += got
+                pnl = got - h.sol_in
+                risk = h.sol_in * t_stop  # 1R = the stop distance
+                reason = orders[0].reason  # "trail" or "stop"
+                print(f"[SELL {reason}] {h.symbol:<10} {h.sol_in:.4f}->{got:.4f} SOL "
+                      f"({pnl:+.4f})  {res.signature or res.reason}")
+                journal.record(h.symbol, pnl, pnl / risk if risk else 0.0,
+                               reason, features=h.features)
+                notifier.sell(h.symbol, pnl, reason, res.dry_run)
+                del holdings[mint]
+                exits.pop(mint, None)
+                store.save(holdings)
+            else:
+                print(f"[SELL FAIL] {h.symbol:<10} {res.reason} (will retry)")
 
     def scan_for_entries() -> None:
         nonlocal scanned_total, skipped_total
@@ -287,6 +313,7 @@ def main() -> None:
                 tokens=tokens_held, opened_ts=time.time(),
                 peak_value_sol=res.sol_in, buy_sig=res.signature or "",
                 features=token_features(view))
+            exits[view.mint] = make_exit(holdings[view.mint])
             store.save(holdings)
             tail = (res.signature or "sent") if not res.dry_run else "would buy"
             print(f"[BUY  ] {view.symbol:<10} {res.sol_in:.4f} SOL  "
