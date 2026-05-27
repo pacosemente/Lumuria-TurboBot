@@ -144,6 +144,12 @@ def main() -> None:
     p.add_argument("--trail", type=float, default=0.25, help="give-back from peak that exits")
     p.add_argument("--min-liquidity", type=float, default=15_000.0)
     p.add_argument("--max-slippage", type=float, default=0.08)
+    p.add_argument("--max-hold-minutes", type=float, default=0.0,
+                   help="force-exit a position older than this (0 = off)")
+    p.add_argument("--priority-fee-lamports", default="auto",
+                   help="Jupiter priority fee; higher lands faster ('auto' or an int)")
+    p.add_argument("--skip-preflight", action="store_true",
+                   help="skip RPC preflight on send (faster; we already simulate)")
     p.add_argument("--interval", type=float, default=25.0, help="seconds between new-token scans")
     p.add_argument("--exit-interval", type=float, default=5.0, help="seconds between exit checks")
     p.add_argument("--max-cycles", type=int, default=0)
@@ -191,10 +197,15 @@ def main() -> None:
         position_usd=args.per_trade_sol * 150,
         rpc_url=rpc, slippage_bps=slippage_bps, decision=decision_cfg,
     ))
+    try:
+        priority = int(args.priority_fee_lamports)
+    except (TypeError, ValueError):
+        priority = "auto"
     execer = SwapExecutor(ExecConfig(
         rpc_url=rpc, keypair_path=args.keypair, live=args.live,
         budget_sol=args.budget_sol, max_position_sol=args.per_trade_sol,
-        slippage_bps=slippage_bps,
+        slippage_bps=slippage_bps, priority_fee_lamports=priority,
+        skip_preflight=args.skip_preflight,
     ))
     # Resolve the trailing exit the bot learned (brain) or the CLI defaults.
     t_stop = brain.stop if brain else args.stop
@@ -261,8 +272,11 @@ def main() -> None:
             pos, strat = exits[mint]
             orders = strat.on_tick(pos, val)  # the learned trailing exit decides
             h.peak_value_sol = pos.peak_price
-            if not orders:
+            timed_out = (args.max_hold_minutes > 0 and
+                         (time.time() - h.opened_ts) / 60 >= args.max_hold_minutes)
+            if not orders and not timed_out:
                 continue
+            exit_reason = orders[0].reason if orders else "timeout"
             sell_tokens = h.tokens
             if args.live:  # sell exactly what we actually hold on-chain
                 try:
@@ -275,7 +289,7 @@ def main() -> None:
                 realized_sol += got
                 pnl = got - h.sol_in
                 risk = h.sol_in * t_stop  # 1R = the stop distance
-                reason = orders[0].reason  # "trail" or "stop"
+                reason = exit_reason  # "trail", "stop" or "timeout"
                 print(f"[SELL {reason}] {h.symbol:<10} {h.sol_in:.4f}->{got:.4f} SOL "
                       f"({pnl:+.4f})  {res.signature or res.reason}")
                 journal.record(h.symbol, pnl, pnl / risk if risk else 0.0,

@@ -41,6 +41,8 @@ class ExecConfig:
     confirm: bool = True              # wait for on-chain confirmation
     confirm_timeout_s: float = 30.0
     confirm_poll_s: float = 2.0
+    priority_fee_lamports: object = "auto"  # higher => more likely to land
+    skip_preflight: bool = False      # we already simulate; True is faster
 
 
 @dataclass
@@ -136,8 +138,9 @@ class SwapExecutor:
                       impact=None) -> ExecResult:
         cfg = self.config
         self._load_keypair()
-        swap_b64 = jupiter.fetch_swap_transaction(quote, self._pubkey,
-                                                  base_url=cfg.jupiter_base)
+        swap_b64 = jupiter.fetch_swap_transaction(
+            quote, self._pubkey, base_url=cfg.jupiter_base,
+            priority_lamports=cfg.priority_fee_lamports)
         if not swap_b64:
             return ExecResult(action, mint, False, False, "swap build failed",
                               sol_in=sol_in, out_amount=out_amount,
@@ -198,7 +201,8 @@ class SwapExecutor:
         wire = base64.b64encode(bytes(signed)).decode()
         resp = http.post_json(self.config.rpc_url, {
             "jsonrpc": "2.0", "id": 1, "method": "sendTransaction",
-            "params": [wire, {"encoding": "base64", "skipPreflight": False,
+            "params": [wire, {"encoding": "base64",
+                              "skipPreflight": self.config.skip_preflight,
                               "maxRetries": 3}],
         })
         if isinstance(resp, dict) and resp.get("error"):
