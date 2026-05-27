@@ -69,6 +69,64 @@ def reconcile(holdings: dict[str, StoredHolding], execer: SwapExecutor,
         store.save(holdings)
 
 
+def run_selfcheck(args) -> int:
+    """Confirm every dependency is wired before risking a cent. Run on the VPS:
+        python3 live.py --selfcheck --brain brain.json --rpc-url <rpc> [--live --keypair ...]
+    """
+    rpc = args.rpc_url or solana_rpc.PUBLIC_RPC
+    print("Lumuria self-check:")
+    ok = True
+
+    if args.brain:
+        try:
+            from lumuria.evolution import load_brain
+            load_brain(args.brain)
+            print(f"  [ok]   brain loads ({args.brain})")
+        except Exception as e:
+            ok = False
+            print(f"  [FAIL] brain: {e}")
+
+    if args.live:
+        try:
+            ex = SwapExecutor(ExecConfig(rpc_url=rpc, keypair_path=args.keypair,
+                                         live=True))
+            print(f"  [ok]   keypair loads ({ex.pubkey()[:8]}...)")
+        except Exception as e:
+            ok = False
+            print(f"  [FAIL] keypair: {e}")
+
+    try:
+        solana_rpc.fetch_authorities(jupiter.USDC, rpc)
+        print(f"  [ok]   RPC reachable ({rpc})")
+    except Exception as e:
+        ok = False
+        print(f"  [FAIL] RPC: {e}")
+
+    try:
+        q = jupiter.fetch_quote_raw(jupiter.USDC, jupiter.SOL, 1_000_000,
+                                    base_url=jupiter.DEFAULT_BASE)
+        if q:
+            print("  [ok]   Jupiter reachable (got a quote)")
+        else:
+            ok = False
+            print("  [FAIL] Jupiter: no quote returned")
+    except Exception as e:
+        ok = False
+        print(f"  [FAIL] Jupiter: {e}")
+
+    notifier = TelegramNotifier(
+        args.telegram_token or os.getenv("TELEGRAM_BOT_TOKEN", ""),
+        args.telegram_chat or os.getenv("TELEGRAM_CHAT_ID", ""))
+    if notifier.enabled:
+        print("  [ok]   Telegram send"
+              if notifier.send("Lumuria self-check OK") else "  [FAIL] Telegram send")
+    else:
+        print("  [warn] Telegram off (no token/chat) — notifications disabled")
+
+    print("  => READY" if ok else "  => NOT READY (fix the [FAIL] items above)")
+    return 0 if ok else 1
+
+
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -94,7 +152,12 @@ def main() -> None:
                    help="send a Telegram status every N scan cycles")
     p.add_argument("--brain", default="",
                    help="evolved brain.json: applies learned entry filters")
+    p.add_argument("--selfcheck", action="store_true",
+                   help="verify RPC, Jupiter, keypair, brain and Telegram, then exit")
     args = p.parse_args()
+
+    if args.selfcheck:
+        sys.exit(run_selfcheck(args))
 
     brain = None
     if args.brain:
@@ -175,7 +238,13 @@ def main() -> None:
                 continue
             h.peak_value_sol = max(h.peak_value_sol, val)
             if val >= args.take_profit * h.sol_in or val <= args.stop * h.sol_in:
-                res = execer.sell(mint, h.tokens)
+                sell_tokens = h.tokens
+                if args.live:  # sell exactly what we actually hold on-chain
+                    try:
+                        sell_tokens = execer.token_balance(mint) or h.tokens
+                    except http.SourceError:
+                        pass
+                res = execer.sell(mint, sell_tokens)
                 if res.ok or res.dry_run:
                     got = res.out_amount / LAMPORTS_PER_SOL if res.ok else val
                     realized_sol += got
@@ -207,9 +276,15 @@ def main() -> None:
             if not (res.ok or res.dry_run):
                 print(f"[skip ] {view.symbol:<10} {res.reason}")
                 continue
+            tokens_held = res.out_amount
+            if args.live and res.ok:  # trust the chain, not the quote estimate
+                try:
+                    tokens_held = execer.token_balance(view.mint) or res.out_amount
+                except http.SourceError:
+                    pass
             holdings[view.mint] = StoredHolding(
                 mint=view.mint, symbol=view.symbol, sol_in=res.sol_in,
-                tokens=res.out_amount, opened_ts=time.time(),
+                tokens=tokens_held, opened_ts=time.time(),
                 peak_value_sol=res.sol_in, buy_sig=res.signature or "",
                 features=token_features(view))
             store.save(holdings)
