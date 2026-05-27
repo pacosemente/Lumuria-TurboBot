@@ -22,10 +22,23 @@ FATE_WEIGHTS: dict[Fate, float] = {
     Fate.MOONSHOT: 0.03,
 }
 
+# Brutal-but-honest DeFi reality: most launches go to zero, winners are rare.
+CRUEL_FATE_WEIGHTS: dict[Fate, float] = {
+    Fate.RUG: 0.45,
+    Fate.HONEYPOT: 0.13,
+    Fate.DUMP: 0.27,
+    Fate.FLAT: 0.08,
+    Fate.RUNNER: 0.05,
+    Fate.MOONSHOT: 0.02,
+}
+
 
 class SimulatedFeed:
-    def __init__(self, n: int = 500, seed: int | None = 42) -> None:
+    def __init__(self, n: int = 500, seed: int | None = 42,
+                 cruel: bool = False) -> None:
         self.n = n
+        self.cruel = cruel
+        self._weights = CRUEL_FATE_WEIGHTS if cruel else FATE_WEIGHTS
         self._rng = random.Random(seed)
 
     def stream(self) -> Iterator[TokenLaunch]:
@@ -42,8 +55,8 @@ class SimulatedFeed:
     # -- internals ---------------------------------------------------------
 
     def _pick_fate(self) -> Fate:
-        fates = list(FATE_WEIGHTS.keys())
-        weights = list(FATE_WEIGHTS.values())
+        fates = list(self._weights.keys())
+        weights = list(self._weights.values())
         return self._rng.choices(fates, weights=weights, k=1)[0]
 
     def _make_snapshot(self, i: int, fate: Fate) -> TokenSnapshot:
@@ -59,7 +72,8 @@ class SimulatedFeed:
         healthy = fate in (Fate.RUNNER, Fate.MOONSHOT)
 
         if scammy:
-            disguised = rng.random() < 0.45  # scam dressed up as legit
+            # In cruel mode scams disguise themselves far better -> leakier filter.
+            disguised = rng.random() < (0.62 if self.cruel else 0.45)
             if disguised:
                 liquidity = rng.uniform(8_000, 60_000)
                 holders = rng.randint(60, 800)
@@ -122,36 +136,46 @@ class SimulatedFeed:
             step(rng.uniform(2, 8), rng.uniform(0.0, 0.0001))
 
         elif fate is Fate.RUG:
-            for _ in range(rng.randint(1, 6)):
+            # Cruel: little warning then a one-step crash, so a stop fills deep
+            # below its level (it "gaps through" you).
+            warn = rng.randint(0, 2) if self.cruel else rng.randint(1, 6)
+            for _ in range(warn):
                 step(rng.uniform(3, 15), 1 + rng.uniform(-0.05, 0.25))
-            step(rng.uniform(2, 10), rng.uniform(0.005, 0.04))  # liquidity yanked
+            floor = rng.uniform(0.005, 0.02) if self.cruel else rng.uniform(0.005, 0.04)
+            step(rng.uniform(2, 10), floor)  # liquidity yanked
 
         elif fate is Fate.DUMP:
-            for _ in range(rng.randint(2, 5)):
-                step(rng.uniform(5, 20), 1 + rng.uniform(0.05, 0.6))
+            pump = rng.uniform(0.0, 0.35) if self.cruel else rng.uniform(0.05, 0.6)
+            for _ in range(rng.randint(1, 4) if self.cruel else rng.randint(2, 5)):
+                step(rng.uniform(5, 20), 1 + pump)
+            low = -0.45 if self.cruel else -0.25  # steeper bleed, gap-downs
             for _ in range(rng.randint(8, 20)):
-                step(rng.uniform(10, 40), 1 + rng.uniform(-0.25, 0.02))
+                step(rng.uniform(10, 40), 1 + rng.uniform(low, 0.02))
 
         elif fate is Fate.FLAT:
+            drift = (-0.10, 0.03) if self.cruel else (-0.08, 0.06)
             for _ in range(rng.randint(15, 30)):
-                step(rng.uniform(15, 60), 1 + rng.uniform(-0.08, 0.06))
+                step(rng.uniform(15, 60), 1 + rng.uniform(*drift))
 
         elif fate is Fate.RUNNER:
-            target = rng.uniform(3.0, 20.0)
+            target = rng.uniform(2.0, 6.0) if self.cruel else rng.uniform(3.0, 20.0)
             climb = rng.randint(12, 30)
             per = target ** (1.0 / climb)
             for _ in range(climb):
                 step(rng.uniform(10, 45), per * (1 + rng.uniform(-0.18, 0.18)))
-            for _ in range(rng.randint(5, 15)):  # fade after the top
-                step(rng.uniform(20, 60), 1 + rng.uniform(-0.2, 0.05))
+            fade = -0.35 if self.cruel else -0.2  # deeper give-back after the top
+            for _ in range(rng.randint(5, 15)):
+                step(rng.uniform(20, 60), 1 + rng.uniform(fade, 0.05))
 
         elif fate is Fate.MOONSHOT:
-            target = rng.uniform(20.0, 200.0)
+            hi = 80.0 if self.cruel else 200.0
+            target = rng.uniform(15.0, hi)
             climb = rng.randint(20, 45)
             per = target ** (1.0 / climb)
             for _ in range(climb):
                 step(rng.uniform(10, 40), per * (1 + rng.uniform(-0.22, 0.22)))
+            fade = -0.40 if self.cruel else -0.25
             for _ in range(rng.randint(8, 20)):
-                step(rng.uniform(20, 80), 1 + rng.uniform(-0.25, 0.05))
+                step(rng.uniform(20, 80), 1 + rng.uniform(fade, 0.05))
 
         return ticks

@@ -60,17 +60,27 @@ def main() -> None:
     parser.add_argument("--fee-pct", type=float, default=0.01)
     parser.add_argument("--slippage-pct", type=float, default=0.02)
     parser.add_argument("--min-liquidity", type=float, default=8_000.0)
+    parser.add_argument("--cruel", action="store_true",
+                        help="brutal-but-honest DeFi reality: more scams, stops "
+                             "that gap through, worse exit fills, priority fees")
     args = parser.parse_args()
 
-    launches = SimulatedFeed(n=args.tokens, seed=args.seed).materialize()
+    launches = SimulatedFeed(n=args.tokens, seed=args.seed,
+                             cruel=args.cruel).materialize()
     safety = SafetyFilter(SafetyConfig(min_liquidity_usd=args.min_liquidity))
-    broker = PaperBroker(fee_pct=args.fee_pct, slippage_pct=args.slippage_pct)
+    if args.cruel:
+        broker = PaperBroker(fee_pct=0.015, slippage_pct=0.06,
+                             exit_slippage_pct=0.12,
+                             priority_fee_usd=max(0.5, args.position_usd * 0.01))
+    else:
+        broker = PaperBroker(fee_pct=args.fee_pct, slippage_pct=args.slippage_pct)
     engine = Backtest(safety=safety, broker=broker, position_usd=args.position_usd)
 
     taken_example = engine.run(launches, list(build_strategies().values())[0])
 
+    mode = "CRUEL (realistic DeFi)" if args.cruel else "baseline"
     print("=" * 64)
-    print("  LUMURIA TURBOBOT — paper-trading sniper simulation")
+    print(f"  LUMURIA TURBOBOT — paper-trading sniper simulation  [{mode}]")
     print("=" * 64)
     print(f"  launches simulated : {len(launches)}")
     print(f"  rejected by safety : {taken_example.skipped} "
