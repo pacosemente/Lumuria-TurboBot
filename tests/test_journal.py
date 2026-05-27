@@ -56,6 +56,31 @@ def test_summary_window_limits_to_recent():
     os.unlink(path)
 
 
+def test_feature_records_cross_analysis():
+    path = _tmp()
+    j = TradeJournal(path)
+    feats = {"liquidity": 50000, "holders": 200, "top_holder": 0.1,
+             "lp_locked": True, "has_freeze": False, "has_mint_auth": False,
+             "t2022_trap": False, "no_sell_route": False}
+    j.record("AAA", 0.20, 5.0, "TP", features=feats)
+    j.record("BBB", -0.02, -1.0, "SL", features=feats)
+    j.record("OLD", 0.01, 0.5, "TP")  # legacy entry, no features
+    rows = j.feature_records()
+    assert len(rows) == 2  # only feature-tagged ones
+    assert rows[0]["liquidity"] == 50000 and rows[0]["win"] is True
+    assert rows[1]["win"] is False
+    os.unlink(path)
+
+
+def test_legacy_entries_without_features_still_load():
+    path = _tmp()
+    with open(path, "w") as f:
+        f.write('{"ts":1,"symbol":"A","pnl_sol":0.1,"pnl_r":1,"reason":"TP"}\n')
+    entries = TradeJournal(path).load()
+    assert len(entries) == 1 and entries[0].features is None
+    os.unlink(path)
+
+
 def test_corrupt_line_skipped():
     path = _tmp()
     with open(path, "w") as f:

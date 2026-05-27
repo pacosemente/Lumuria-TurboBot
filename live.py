@@ -30,6 +30,7 @@ import sys
 import time
 
 from lumuria.execution.live_executor import ExecConfig, SwapExecutor, LAMPORTS_PER_SOL
+from lumuria.explore import token_features
 from lumuria.notify import TelegramNotifier
 from lumuria.realtime import Scanner, ScannerConfig
 from lumuria.realtime.decision import DecisionConfig
@@ -108,6 +109,10 @@ def main() -> None:
         print("Refusing --live without --keypair and --i-understand-real-funds.",
               file=sys.stderr)
         sys.exit(2)
+    if args.live and not args.brain:
+        print("Refusing --live without --brain: real trades only run the strategy "
+              "it has learned (train one with: python3 prepare.py).", file=sys.stderr)
+        sys.exit(2)
 
     rpc = args.rpc_url or solana_rpc.PUBLIC_RPC
     slippage_bps = int(args.max_slippage * 10_000)
@@ -179,7 +184,8 @@ def main() -> None:
                     risk = h.sol_in * (1 - args.stop)
                     print(f"[SELL {tag}] {h.symbol:<10} {h.sol_in:.4f}->{got:.4f} SOL "
                           f"({pnl:+.4f})  {res.signature or res.reason}")
-                    journal.record(h.symbol, pnl, pnl / risk if risk else 0.0, tag)
+                    journal.record(h.symbol, pnl, pnl / risk if risk else 0.0,
+                                   tag, features=h.features)
                     notifier.sell(h.symbol, pnl, tag, res.dry_run)
                     del holdings[mint]
                     store.save(holdings)
@@ -204,7 +210,8 @@ def main() -> None:
             holdings[view.mint] = StoredHolding(
                 mint=view.mint, symbol=view.symbol, sol_in=res.sol_in,
                 tokens=res.out_amount, opened_ts=time.time(),
-                peak_value_sol=res.sol_in, buy_sig=res.signature or "")
+                peak_value_sol=res.sol_in, buy_sig=res.signature or "",
+                features=token_features(view))
             store.save(holdings)
             tail = (res.signature or "sent") if not res.dry_run else "would buy"
             print(f"[BUY  ] {view.symbol:<10} {res.sol_in:.4f} SOL  "

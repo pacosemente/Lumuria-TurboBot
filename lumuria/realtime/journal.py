@@ -21,6 +21,7 @@ class JournalEntry:
     pnl_sol: float
     pnl_r: float
     reason: str
+    features: dict | None = None  # token features at entry, for cross-analysis
 
 
 class TradeJournal:
@@ -28,10 +29,22 @@ class TradeJournal:
         self.path = path
 
     def record(self, symbol: str, pnl_sol: float, pnl_r: float,
-               reason: str) -> None:
-        entry = JournalEntry(time.time(), symbol, pnl_sol, pnl_r, reason)
+               reason: str, features: dict | None = None) -> None:
+        entry = JournalEntry(time.time(), symbol, pnl_sol, pnl_r, reason, features)
         with open(self.path, "a") as f:
             f.write(json.dumps(entry.__dict__) + "\n")
+
+    def feature_records(self) -> list[dict]:
+        """Real closed trades as feature rows, so the same analyzer that studies
+        the simulation can study what actually happened live."""
+        out = []
+        for e in self.load():
+            if e.features:
+                row = dict(e.features)
+                row["pnl_r"] = e.pnl_r
+                row["win"] = e.pnl_sol > 0
+                out.append(row)
+        return out
 
     def load(self) -> list[JournalEntry]:
         if not os.path.exists(self.path):

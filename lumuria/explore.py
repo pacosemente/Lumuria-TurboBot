@@ -47,7 +47,8 @@ def simulate_trade(launch, strategy, broker, size: float) -> float:
     return proceeds - pos.cost_usd
 
 
-def _features(view) -> dict:
+def token_features(view) -> dict:
+    """Observable features of a token, used both in sim study and live journal."""
     a = view.authorities
     return {
         "liquidity": view.market.liquidity_usd or 0.0,
@@ -72,7 +73,7 @@ def explore(seeds=(7, 99, 2024), tokens: int = 1500, *, stop: float = 0.30,
             view = synth_view(launch, POSITION_USD, rng)
             pnl = simulate_trade(launch, TrailingStop(stop, arm, trail),
                                  broker, POSITION_USD)
-            f = _features(view)
+            f = token_features(view)
             f.update(pnl=pnl, pnl_r=pnl / risk if risk else 0.0, win=pnl > 0)
             records.append(f)
     return records

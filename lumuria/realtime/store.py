@@ -20,6 +20,7 @@ class StoredHolding:
     opened_ts: float
     peak_value_sol: float = 0.0
     buy_sig: str = ""
+    features: dict | None = None  # token features at entry, for cross-analysis
 
 
 @dataclass

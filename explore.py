@@ -43,7 +43,20 @@ def main() -> None:
     ap.add_argument("--loop", action="store_true", help="study forever, accelerating")
     ap.add_argument("--round-seconds", type=float, default=2.0)
     ap.add_argument("--max-tokens", type=int, default=12000)
+    ap.add_argument("--journal", default="",
+                    help="study REAL trades from this journal instead of the sim")
     args = ap.parse_args()
+
+    if args.journal:
+        from lumuria.realtime.journal import TradeJournal
+        records = TradeJournal(args.journal).feature_records()
+        if not records:
+            print(f"  No feature-tagged trades in {args.journal} yet — run the bot "
+                  "first to gather real data.")
+            return
+        print(f"  Studying {len(records)} REAL trades from {args.journal}")
+        report(0, len(records), analyze(records))
+        return
 
     round_no = 0
     tokens = args.tokens
