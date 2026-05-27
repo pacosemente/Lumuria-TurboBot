@@ -76,6 +76,49 @@ def fetch_quote(
     return parse_quote(payload)
 
 
+def fetch_quote_raw(
+    input_mint: str,
+    output_mint: str,
+    amount_base: int,
+    *,
+    slippage_bps: int = 500,
+    base_url: str = DEFAULT_BASE,
+) -> dict | None:
+    """Raw quote dict, needed verbatim as the `quoteResponse` for /swap."""
+    try:
+        payload = http.get_json(f"{base_url}/quote", params={
+            "inputMint": input_mint,
+            "outputMint": output_mint,
+            "amount": int(amount_base),
+            "slippageBps": slippage_bps,
+        })
+    except http.SourceError as e:
+        if isinstance(e, http.SourceUnavailable):
+            raise
+        return None
+    if not payload or payload.get("error") or "outAmount" not in payload:
+        return None
+    return payload
+
+
+def fetch_swap_transaction(
+    quote_raw: dict,
+    user_pubkey: str,
+    *,
+    base_url: str = DEFAULT_BASE,
+    priority_lamports: object = "auto",
+) -> str | None:
+    """Ask Jupiter to build the swap; returns a base64 VersionedTransaction."""
+    payload = http.post_json(f"{base_url}/swap", {
+        "quoteResponse": quote_raw,
+        "userPublicKey": user_pubkey,
+        "wrapAndUnwrapSol": True,
+        "dynamicComputeUnitLimit": True,
+        "prioritizationFeeLamports": priority_lamports,
+    })
+    return (payload or {}).get("swapTransaction")
+
+
 def roundtrip_usdc(
     mint: str,
     position_usd: float,

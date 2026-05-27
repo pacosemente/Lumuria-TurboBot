@@ -21,16 +21,32 @@ class Market:
 
 @dataclass
 class Authorities:
-    """Mint/freeze control (Solana RPC, cross-checked by RugCheck).
+    """Mint control + Token-2022 extensions, read straight from the chain.
 
-    These are the strongest honeypot/rug signals on Solana:
-      - freeze authority present  -> dev can freeze your account; you can't sell
-      - mint authority present    -> dev can mint unlimited supply and dump
+    The strongest honeypot/rug signals on Solana live here:
+      - freeze authority present     -> dev can freeze your account; can't sell
+      - mint authority present       -> dev can mint unlimited supply and dump
+      - default account state frozen -> you RECEIVE tokens frozen; can't sell
+      - transfer hook                -> custom program runs on every transfer
+                                        and can simply block your sell
+      - permanent delegate           -> dev can move/burn your tokens any time
+      - transfer fee                 -> a cut taken on every transfer (a high
+                                        one is a soft honeypot)
     """
 
     mint_authority: Optional[str] = None
     freeze_authority: Optional[str] = None
     decimals: Optional[int] = None
+    program: Optional[str] = None  # "spl-token" | "spl-token-2022"
+    default_account_frozen: Optional[bool] = None
+    transfer_fee_bps: Optional[int] = None
+    has_transfer_hook: Optional[bool] = None
+    has_permanent_delegate: Optional[bool] = None
+
+    @property
+    def verified(self) -> bool:
+        """True once we actually read the mint (decimals come back)."""
+        return self.decimals is not None
 
     @property
     def mint_revoked(self) -> bool:
@@ -39,6 +55,10 @@ class Authorities:
     @property
     def freeze_revoked(self) -> bool:
         return self.freeze_authority is None
+
+    @property
+    def transfer_fee_pct(self) -> Optional[float]:
+        return self.transfer_fee_bps / 10_000 if self.transfer_fee_bps is not None else None
 
 
 @dataclass

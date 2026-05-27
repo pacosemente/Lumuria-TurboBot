@@ -33,6 +33,11 @@ class DecisionConfig:
     require_lp_locked_pct: float = 0.80
     require_sell_route: bool = True
     block_on_unknown: bool = True           # unverified critical signal => skip
+    # Token-2022 honeypot vectors:
+    block_default_frozen: bool = True       # tokens arrive frozen => can't sell
+    block_transfer_hook: bool = True        # custom program can block transfers
+    block_permanent_delegate: bool = True   # dev can seize/burn your tokens
+    max_transfer_fee_pct: float = 0.10      # tax taken on every transfer
 
 
 @dataclass
@@ -79,12 +84,21 @@ def evaluate(view: TokenView, config: DecisionConfig, position_usd: float) -> De
     elif liq < config.min_liquidity_usd:
         block(Category.LIQUIDITY, f"low liquidity (${liq:,.0f})")
 
-    # --- honeypot: freeze authority --------------------------------------
-    fa = view.authorities.freeze_authority
-    if fa is not None:
+    # --- honeypot: freeze authority + Token-2022 extensions --------------
+    a = view.authorities
+    if a.freeze_authority is not None:
         block(Category.HONEYPOT, "freeze authority active (can freeze your tokens)")
-    elif view.authorities.decimals is None and config.block_on_unknown:
+    elif not a.verified and config.block_on_unknown:
         block(Category.UNVERIFIED, "mint authorities unverified on-chain")
+
+    if config.block_default_frozen and a.default_account_frozen:
+        block(Category.HONEYPOT, "default account state frozen (arrives non-sellable)")
+    if config.block_transfer_hook and a.has_transfer_hook:
+        block(Category.HONEYPOT, "transfer hook program (can block your sell)")
+    if config.block_permanent_delegate and a.has_permanent_delegate:
+        block(Category.SCAM, "permanent delegate (dev can seize your tokens)")
+    if a.transfer_fee_pct is not None and a.transfer_fee_pct > config.max_transfer_fee_pct:
+        block(Category.SCAM, f"transfer fee {a.transfer_fee_pct:.0%} per trade")
 
     # --- honeypot: must have a sell route --------------------------------
     if config.require_sell_route:

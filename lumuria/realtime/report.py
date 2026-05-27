@@ -39,9 +39,19 @@ def format_token(view: TokenView, decision: Decision) -> str:
                  f"{m.buys_h24 if m.buys_h24 is not None else '?'}/"
                  f"{m.sells_h24 if m.sells_h24 is not None else '?'}")
 
-    lines.append("    authorities:")
-    lines.append(f"      freeze : {_flag(a.freeze_revoked if a.decimals is not None or a.freeze_authority else None, 'revoked', 'ACTIVE -> honeypot risk')}")
-    lines.append(f"      mint   : {_flag(a.mint_revoked if a.decimals is not None or a.mint_authority else None, 'revoked', 'ACTIVE -> infinite-mint risk')}")
+    prog = a.program or "?"
+    lines.append(f"    authorities ({prog}):")
+    if a.verified:
+        lines.append(f"      freeze : {_flag(a.freeze_revoked, 'revoked', 'ACTIVE -> honeypot')}")
+        lines.append(f"      mint   : {_flag(a.mint_revoked, 'revoked', 'ACTIVE -> infinite-mint')}")
+        if a.program == "spl-token-2022":
+            lines.append(f"      default frozen   : {a.default_account_frozen}"
+                         f"  |  transfer hook : {a.has_transfer_hook}"
+                         f"  |  perm delegate : {a.has_permanent_delegate}"
+                         f"  |  transfer fee : {_pct(a.transfer_fee_pct)}")
+    else:
+        lines.append("      freeze : ?  (unverified)")
+        lines.append("      mint   : ?  (unverified)")
 
     lines.append(f"    LP locked/burned : {_pct(view.liquidity.lp_locked_or_burned_pct)}")
     lines.append(f"    holders : {h.count if h.count is not None else '?'}"

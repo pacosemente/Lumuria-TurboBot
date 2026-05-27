@@ -9,6 +9,7 @@ VPS/Helius/QuickNode node for speed and to avoid public-endpoint rate limits.
 """
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from typing import Any
 
 from . import http
@@ -17,14 +18,42 @@ from ..realtime.view import Authorities
 PUBLIC_RPC = "https://api.mainnet-beta.solana.com"
 
 
+def _extensions(info: dict[str, Any]) -> dict[str, dict]:
+    """Map a Token-2022 mint's extensions by name."""
+    out: dict[str, dict] = {}
+    for ext in info.get("extensions") or []:
+        name = ext.get("extension")
+        if name:
+            out[name] = ext.get("state") or {}
+    return out
+
+
 def parse_account_info(payload: dict[str, Any]) -> Authorities:
     value = (payload.get("result") or {}).get("value") or {}
     data = value.get("data") or {}
     info = (data.get("parsed") or {}).get("info") or {}
+    program = data.get("program")  # "spl-token" or "spl-token-2022"
+    exts = _extensions(info)
+
+    default_frozen = None
+    if "defaultAccountState" in exts:
+        default_frozen = exts["defaultAccountState"].get("accountState") == "frozen"
+
+    transfer_fee_bps = None
+    if "transferFeeConfig" in exts:
+        cfg = exts["transferFeeConfig"]
+        newer = cfg.get("newerTransferFee") or {}
+        transfer_fee_bps = newer.get("transferFeeBasisPoints")
+
     return Authorities(
         mint_authority=info.get("mintAuthority"),
         freeze_authority=info.get("freezeAuthority"),
         decimals=info.get("decimals"),
+        program=program,
+        default_account_frozen=default_frozen,
+        transfer_fee_bps=transfer_fee_bps,
+        has_transfer_hook=("transferHook" in exts) if exts or program else None,
+        has_permanent_delegate=("permanentDelegate" in exts) if exts or program else None,
     )
 
 
@@ -36,3 +65,41 @@ def fetch_authorities(mint: str, rpc_url: str = PUBLIC_RPC) -> Authorities:
         "params": [mint, {"encoding": "jsonParsed"}],
     })
     return parse_account_info(payload)
+
+
+@dataclass
+class SimResult:
+    ok: bool
+    err: Any = None
+    logs: list[str] = field(default_factory=list)
+    units_consumed: int | None = None
+
+
+def parse_simulation(payload: dict[str, Any]) -> SimResult:
+    value = (payload.get("result") or {}).get("value") or {}
+    err = value.get("err")
+    return SimResult(
+        ok=err is None,
+        err=err,
+        logs=value.get("logs") or [],
+        units_consumed=value.get("unitsConsumed"),
+    )
+
+
+def simulate_transaction(b64_tx: str, rpc_url: str = PUBLIC_RPC) -> SimResult:
+    """Ask the chain to dry-run a (serialized, base64) transaction.
+
+    No signature and no funds needed: the blockhash is replaced and signature
+    verification is skipped, so this previews whether the swap would land.
+    """
+    payload = http.post_json(rpc_url, {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "simulateTransaction",
+        "params": [b64_tx, {
+            "sigVerify": False,
+            "replaceRecentBlockhash": True,
+            "encoding": "base64",
+        }],
+    })
+    return parse_simulation(payload)

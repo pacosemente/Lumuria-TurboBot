@@ -105,6 +105,41 @@ def test_solana_rpc_authorities():
     assert not a.freeze_revoked and a.mint_revoked
 
 
+TOKEN2022_MINT = {"result": {"value": {"data": {
+    "program": "spl-token-2022",
+    "parsed": {"info": {
+        "decimals": 6, "mintAuthority": None, "freezeAuthority": None,
+        "extensions": [
+            {"extension": "transferFeeConfig",
+             "state": {"newerTransferFee": {"transferFeeBasisPoints": 2000}}},
+            {"extension": "defaultAccountState", "state": {"accountState": "frozen"}},
+            {"extension": "transferHook", "state": {"programId": "HOOK1"}},
+            {"extension": "permanentDelegate", "state": {"delegate": "DEL1"}},
+        ],
+    }},
+}}}}
+
+
+def test_token2022_extensions_parsed():
+    a = solana_rpc.parse_account_info(TOKEN2022_MINT)
+    assert a.program == "spl-token-2022"
+    assert a.verified and a.decimals == 6
+    assert a.default_account_frozen is True
+    assert a.transfer_fee_bps == 2000
+    assert abs(a.transfer_fee_pct - 0.20) < 1e-9
+    assert a.has_transfer_hook is True
+    assert a.has_permanent_delegate is True
+
+
+def test_plain_spl_token_has_no_extensions():
+    payload = {"result": {"value": {"data": {"program": "spl-token", "parsed": {
+        "info": {"decimals": 9, "mintAuthority": None, "freezeAuthority": None}}}}}}
+    a = solana_rpc.parse_account_info(payload)
+    assert a.program == "spl-token"
+    assert a.has_transfer_hook is False
+    assert a.transfer_fee_bps is None
+
+
 def test_jupiter_quote_ok_and_noroute():
     ok = jupiter.parse_quote({"outAmount": "49250000", "priceImpactPct": "0.0123"})
     assert ok.route_exists and ok.out_amount == 49250000
@@ -185,6 +220,39 @@ def test_low_liquidity_blocks():
     d = evaluate(v, CFG, position_usd=50)
     assert not d.enter
     assert d.by_category(Category.LIQUIDITY)
+
+
+def test_default_frozen_is_honeypot():
+    v = _clean_view()
+    v.authorities.program = "spl-token-2022"
+    v.authorities.default_account_frozen = True
+    d = evaluate(v, CFG, position_usd=50)
+    assert not d.enter
+    assert any("frozen" in r for r in d.by_category(Category.HONEYPOT))
+
+
+def test_transfer_hook_is_honeypot():
+    v = _clean_view()
+    v.authorities.has_transfer_hook = True
+    d = evaluate(v, CFG, position_usd=50)
+    assert not d.enter
+    assert any("hook" in r for r in d.by_category(Category.HONEYPOT))
+
+
+def test_permanent_delegate_is_scam():
+    v = _clean_view()
+    v.authorities.has_permanent_delegate = True
+    d = evaluate(v, CFG, position_usd=50)
+    assert not d.enter
+    assert d.by_category(Category.SCAM)
+
+
+def test_high_transfer_fee_is_scam():
+    v = _clean_view()
+    v.authorities.transfer_fee_bps = 2000  # 20%
+    d = evaluate(v, CFG, position_usd=50)
+    assert not d.enter
+    assert any("transfer fee" in r for r in d.by_category(Category.SCAM))
 
 
 def test_unverified_data_blocks_by_default():
