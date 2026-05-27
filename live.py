@@ -33,6 +33,7 @@ from lumuria.execution.live_executor import ExecConfig, SwapExecutor, LAMPORTS_P
 from lumuria.notify import TelegramNotifier
 from lumuria.realtime import Scanner, ScannerConfig
 from lumuria.realtime.decision import DecisionConfig
+from lumuria.realtime.journal import TradeJournal
 from lumuria.realtime.store import PositionStore, StoredHolding
 from lumuria.sources import http, jupiter, solana_rpc
 
@@ -85,6 +86,7 @@ def main() -> None:
     p.add_argument("--max-cycles", type=int, default=0)
     p.add_argument("--rpc-url", default="")
     p.add_argument("--state-file", default="lumuria_state.json")
+    p.add_argument("--journal-file", default="lumuria_trades.jsonl")
     p.add_argument("--telegram-token", default="", help="overrides TELEGRAM_BOT_TOKEN")
     p.add_argument("--telegram-chat", default="", help="overrides TELEGRAM_CHAT_ID")
     p.add_argument("--status-every", type=int, default=20,
@@ -114,6 +116,7 @@ def main() -> None:
     notifier = TelegramNotifier(
         args.telegram_token or os.getenv("TELEGRAM_BOT_TOKEN", ""),
         args.telegram_chat or os.getenv("TELEGRAM_CHAT_ID", ""))
+    journal = TradeJournal(args.journal_file)
 
     if args.live:
         try:
@@ -131,6 +134,9 @@ def main() -> None:
     if holdings:
         print(f"  resumed with {len(holdings)} open position(s) from {args.state_file}")
     print(f"  telegram: {'on' if notifier.enabled else 'off'}")
+    hist = len(journal.load())
+    if hist:
+        print(f"  trade journal: {hist} closed trades on record ({args.journal_file})")
     print("=" * 62)
     notifier.startup(mode, args.budget_sol, args.per_trade_sol)
 
@@ -156,10 +162,12 @@ def main() -> None:
                     got = res.out_amount / LAMPORTS_PER_SOL if res.ok else val
                     realized_sol += got
                     tag = "TP" if val >= args.take_profit * h.sol_in else "SL"
+                    pnl = got - h.sol_in
+                    risk = h.sol_in * (1 - args.stop)
                     print(f"[SELL {tag}] {h.symbol:<10} {h.sol_in:.4f}->{got:.4f} SOL "
-                          f"({got - h.sol_in:+.4f})  "
-                          f"{res.signature or res.reason}")
-                    notifier.sell(h.symbol, got - h.sol_in, tag, res.dry_run)
+                          f"({pnl:+.4f})  {res.signature or res.reason}")
+                    journal.record(h.symbol, pnl, pnl / risk if risk else 0.0, tag)
+                    notifier.sell(h.symbol, pnl, tag, res.dry_run)
                     del holdings[mint]
                     store.save(holdings)
                 else:
@@ -204,6 +212,8 @@ def main() -> None:
                 notifier.status(args.budget_sol - committed() + realized_sol,
                                 len(holdings), realized_sol,
                                 scanned_total, skipped_total)
+                notifier.performance(journal.summary(), journal.summary(window=50),
+                                     realized_sol, len(holdings), 50)
             # Keep watching exits at the faster cadence between scans.
             if args.max_cycles == 0 or cycle < args.max_cycles:
                 waited = 0.0
@@ -220,6 +230,8 @@ def main() -> None:
     except KeyboardInterrupt:
         print("\n  Stopped. Open positions saved to", args.state_file)
 
+    notifier.performance(journal.summary(), journal.summary(window=50),
+                         realized_sol, len(holdings), 50)
     notifier.shutdown(realized_sol, len(holdings))
 
     open_cost = committed()

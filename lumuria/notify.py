@@ -65,6 +65,32 @@ class TelegramNotifier:
                   f"realized {realized:+.4f} SOL\nscanned {scanned} | "
                   f"skipped {skipped}")
 
+    def performance(self, all_m, recent_m, realized_sol: float,
+                    open_n: int, recent_window: int) -> None:
+        """Send a profitability analysis built from the trade journal."""
+        if all_m.trades == 0:
+            self.send(f"Performance\nno closed trades yet | open {open_n}")
+            return
+        # Honest proxy for 'evolving': is the recent window beating all-time?
+        if recent_m.trades >= 5:
+            delta = recent_m.expectancy_r - all_m.expectancy_r
+            trend = ("improving" if delta > 0.1 else
+                     "declining" if delta < -0.1 else "stable")
+            recent_line = (f"\nlast {recent_window}: {recent_m.expectancy_r:+.2f} R "
+                           f"({trend})")
+        else:
+            recent_line = ""
+        verdict = "PROFITABLE" if all_m.expectancy_usd > 0 else "not profitable yet"
+        self.send(
+            f"Performance ({all_m.trades} trades)\n"
+            f"win rate {all_m.win_rate:.0%} ({all_m.wins}W/{all_m.losses}L)\n"
+            f"expectancy {all_m.expectancy_r:+.2f} R "
+            f"({all_m.expectancy_usd:+.4f} SOL/trade)\n"
+            f"profit factor {all_m.profit_factor:.2f}\n"
+            f"realized {realized_sol:+.4f} SOL | open {open_n}\n"
+            f"max drawdown {all_m.max_drawdown_usd:.4f} SOL"
+            f"{recent_line}\n=> {verdict}")
+
     def error(self, msg: str) -> None:
         self.send(f"[ERROR] {msg}")
 
