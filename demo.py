@@ -18,56 +18,9 @@ import time
 from lumuria.feeds.simulated import SimulatedFeed
 from lumuria.models import Fate
 from lumuria.realtime.decision import Category, DecisionConfig, evaluate
-from lumuria.realtime.view import (Authorities, Holders, Liquidity, Market,
-                                   RiskReport, SellQuote, TokenView)
+from lumuria.realtime.simsource import synth_view
 
 SOL_USD = 150.0
-
-
-def synth_view(launch, position_usd: float, rng: random.Random) -> TokenView:
-    """Turn a simulated launch into a TokenView the decision engine can judge.
-
-    Safety attributes are derived from the launch's hidden fate (with the same
-    'scams disguise themselves' noise as the feed), so the engine rejects bad
-    tokens for realistic, specific reasons."""
-    snap, fate = launch.snapshot, launch.fate
-    liq = snap.liquidity_usd
-
-    a = Authorities(decimals=6, program="spl-token", mint_authority=None,
-                    freeze_authority=None, default_account_frozen=False,
-                    has_transfer_hook=False, has_permanent_delegate=False,
-                    transfer_fee_bps=0)
-    sell_route = True
-
-    if fate is Fate.HONEYPOT:
-        trap = rng.choice(["freeze", "frozen", "hook", "noroute"])
-        if trap == "freeze":
-            a.freeze_authority = "Fz1111"
-        elif trap == "frozen":
-            a.program = "spl-token-2022"
-            a.default_account_frozen = True
-        elif trap == "hook":
-            a.program = "spl-token-2022"
-            a.has_transfer_hook = True
-        else:
-            sell_route = False
-    elif fate is Fate.RUG and rng.random() < 0.6:
-        a.mint_authority = "Mn1111"  # infinite-mint risk
-
-    # Price impact grows with trade size vs. liquidity (constant-product-ish).
-    impact = min(position_usd / (liq / 2 + position_usd), 1.0) if liq else 1.0
-
-    return TokenView(
-        mint=snap.address, symbol=snap.symbol, dex="raydium",
-        market=Market(price_usd=launch.path[0].price, liquidity_usd=liq,
-                      fdv_usd=liq * 3, volume_h24_usd=liq * 0.5),
-        authorities=a,
-        holders=Holders(count=snap.holders, top_holder_pct=snap.top_holder_pct,
-                        top10_pct=min(snap.top_holder_pct * 1.8, 1.0)),
-        liquidity=Liquidity(lp_locked_or_burned_pct=1.0 if snap.lp_locked else 0.1),
-        risk=RiskReport(score=200, rugged=False, risks=[]),
-        sell_quote=SellQuote(route_exists=sell_route, price_impact_pct=impact),
-    )
 
 
 def main() -> None:
