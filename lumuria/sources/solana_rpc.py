@@ -103,3 +103,53 @@ def simulate_transaction(b64_tx: str, rpc_url: str = PUBLIC_RPC) -> SimResult:
         }],
     })
     return parse_simulation(payload)
+
+
+@dataclass
+class SigStatus:
+    found: bool
+    confirmed: bool
+    err: Any = None
+
+
+def parse_signature_status(payload: dict[str, Any]) -> SigStatus:
+    value = (payload.get("result") or {}).get("value") or [None]
+    info = value[0] if value else None
+    if not info:
+        return SigStatus(found=False, confirmed=False)
+    status = info.get("confirmationStatus")
+    return SigStatus(
+        found=True,
+        confirmed=status in ("confirmed", "finalized") and info.get("err") is None,
+        err=info.get("err"),
+    )
+
+
+def get_signature_status(signature: str, rpc_url: str = PUBLIC_RPC) -> SigStatus:
+    payload = http.post_json(rpc_url, {
+        "jsonrpc": "2.0", "id": 1, "method": "getSignatureStatuses",
+        "params": [[signature], {"searchTransactionHistory": True}],
+    })
+    return parse_signature_status(payload)
+
+
+def parse_token_balance(payload: dict[str, Any]) -> int:
+    """Sum raw token amounts across all of an owner's accounts for one mint."""
+    total = 0
+    for acct in (payload.get("result") or {}).get("value") or []:
+        info = (((acct.get("account") or {}).get("data") or {})
+                .get("parsed") or {}).get("info") or {}
+        amount = (info.get("tokenAmount") or {}).get("amount")
+        try:
+            total += int(amount)
+        except (TypeError, ValueError):
+            pass
+    return total
+
+
+def get_token_balance(owner: str, mint: str, rpc_url: str = PUBLIC_RPC) -> int:
+    payload = http.post_json(rpc_url, {
+        "jsonrpc": "2.0", "id": 1, "method": "getTokenAccountsByOwner",
+        "params": [owner, {"mint": mint}, {"encoding": "jsonParsed"}],
+    })
+    return parse_token_balance(payload)

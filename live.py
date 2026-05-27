@@ -10,6 +10,10 @@ Real trading needs all of: --live  --keypair <path>  --i-understand-real-funds
 The private key is read from that file on this machine and never transmitted
 anywhere except to sign your own transactions.
 
+Hardened for real operation: open positions are persisted to disk (survive a
+restart), reconciled against on-chain balances in live mode, transactions are
+confirmed before being recorded, and exits are monitored between scans.
+
 Run on your VPS (the data APIs are blocked in the Claude sandbox):
 
     # safe preview, no money:
@@ -23,20 +27,12 @@ from __future__ import annotations
 import argparse
 import sys
 import time
-from dataclasses import dataclass
 
 from lumuria.execution.live_executor import ExecConfig, SwapExecutor, LAMPORTS_PER_SOL
 from lumuria.realtime import Scanner, ScannerConfig
 from lumuria.realtime.decision import DecisionConfig
+from lumuria.realtime.store import PositionStore, StoredHolding
 from lumuria.sources import http, jupiter, solana_rpc
-
-
-@dataclass
-class Holding:
-    mint: str
-    symbol: str
-    sol_in: float
-    tokens: int
 
 
 def sell_value_sol(mint: str, tokens: int, base_url: str, slippage_bps: int) -> float | None:
@@ -46,6 +42,27 @@ def sell_value_sol(mint: str, tokens: int, base_url: str, slippage_bps: int) -> 
     if not q:
         return None
     return int(q.get("outAmount", 0)) / LAMPORTS_PER_SOL
+
+
+def reconcile(holdings: dict[str, StoredHolding], execer: SwapExecutor,
+              store: PositionStore) -> None:
+    """In live mode, trust the chain over the file: drop anything we no longer
+    actually hold, and correct token amounts that drifted."""
+    changed = False
+    for mint in list(holdings):
+        try:
+            bal = execer.token_balance(mint)
+        except http.SourceError:
+            continue  # can't check now; leave as-is
+        if bal <= 0:
+            print(f"[reconcile] dropping {holdings[mint].symbol} (chain balance 0)")
+            del holdings[mint]
+            changed = True
+        elif bal != holdings[mint].tokens:
+            holdings[mint].tokens = bal
+            changed = True
+    if changed:
+        store.save(holdings)
 
 
 def main() -> None:
@@ -61,9 +78,11 @@ def main() -> None:
     p.add_argument("--stop", type=float, default=0.6, help="exit multiple, e.g. 0.6 = -40%%")
     p.add_argument("--min-liquidity", type=float, default=15_000.0)
     p.add_argument("--max-slippage", type=float, default=0.08)
-    p.add_argument("--interval", type=float, default=25.0)
+    p.add_argument("--interval", type=float, default=25.0, help="seconds between new-token scans")
+    p.add_argument("--exit-interval", type=float, default=5.0, help="seconds between exit checks")
     p.add_argument("--max-cycles", type=int, default=0)
     p.add_argument("--rpc-url", default="")
+    p.add_argument("--state-file", default="lumuria_state.json")
     args = p.parse_args()
 
     if args.live and not (args.keypair and args.i_understand_real_funds):
@@ -74,7 +93,7 @@ def main() -> None:
     rpc = args.rpc_url or solana_rpc.PUBLIC_RPC
     slippage_bps = int(args.max_slippage * 10_000)
     scanner = Scanner(ScannerConfig(
-        position_usd=args.per_trade_sol * 150,  # rough USD for the slippage gate
+        position_usd=args.per_trade_sol * 150,
         rpc_url=rpc, slippage_bps=slippage_bps,
         decision=DecisionConfig(min_liquidity_usd=args.min_liquidity,
                                 max_slippage_pct=args.max_slippage),
@@ -84,6 +103,8 @@ def main() -> None:
         budget_sol=args.budget_sol, max_position_sol=args.per_trade_sol,
         slippage_bps=slippage_bps,
     ))
+    store = PositionStore(args.state_file)
+    holdings = store.load()
 
     if args.live:
         try:
@@ -91,76 +112,94 @@ def main() -> None:
         except RuntimeError as e:
             print(f"Cannot start live mode: {e}", file=sys.stderr)
             sys.exit(2)
+        reconcile(holdings, execer, store)
 
     mode = "LIVE (real funds)" if args.live else "DRY-RUN (no money sent)"
     print("=" * 62)
     print(f"  LUMURIA TURBOBOT — live operation  [{mode}]")
     print(f"  budget {args.budget_sol} SOL | per trade {args.per_trade_sol} SOL "
           f"| TP x{args.take_profit} | SL x{args.stop}")
+    if holdings:
+        print(f"  resumed with {len(holdings)} open position(s) from {args.state_file}")
     print("=" * 62)
 
-    holdings: dict[str, Holding] = {}
-    committed_sol = 0.0
     realized_sol = 0.0
+
+    def committed() -> float:
+        return sum(h.sol_in for h in holdings.values())
+
+    def manage_exits() -> None:
+        nonlocal realized_sol
+        for mint in list(holdings):
+            h = holdings[mint]
+            val = sell_value_sol(mint, h.tokens, jupiter.DEFAULT_BASE, slippage_bps)
+            if val is None:
+                print(f"[TRAP ] {h.symbol:<10} no sell route now (honeypot realized)")
+                continue
+            h.peak_value_sol = max(h.peak_value_sol, val)
+            if val >= args.take_profit * h.sol_in or val <= args.stop * h.sol_in:
+                res = execer.sell(mint, h.tokens)
+                if res.ok or res.dry_run:
+                    got = res.out_amount / LAMPORTS_PER_SOL if res.ok else val
+                    realized_sol += got
+                    tag = "TP" if val >= args.take_profit * h.sol_in else "SL"
+                    print(f"[SELL {tag}] {h.symbol:<10} {h.sol_in:.4f}->{got:.4f} SOL "
+                          f"({got - h.sol_in:+.4f})  "
+                          f"{res.signature or res.reason}")
+                    del holdings[mint]
+                    store.save(holdings)
+                else:
+                    print(f"[SELL FAIL] {h.symbol:<10} {res.reason} (will retry)")
+
+    def scan_for_entries() -> None:
+        if committed() + args.per_trade_sol > args.budget_sol + 1e-9:
+            return
+        for view, decision in scanner.scan_once():
+            if not decision.enter or view.mint in holdings:
+                continue
+            if committed() + args.per_trade_sol > args.budget_sol + 1e-9:
+                break
+            res = execer.buy(view.mint, args.per_trade_sol)
+            if not (res.ok or res.dry_run):
+                print(f"[skip ] {view.symbol:<10} {res.reason}")
+                continue
+            holdings[view.mint] = StoredHolding(
+                mint=view.mint, symbol=view.symbol, sol_in=res.sol_in,
+                tokens=res.out_amount, opened_ts=time.time(),
+                peak_value_sol=res.sol_in, buy_sig=res.signature or "")
+            store.save(holdings)
+            tail = (res.signature or "sent") if not res.dry_run else "would buy"
+            print(f"[BUY  ] {view.symbol:<10} {res.sol_in:.4f} SOL  "
+                  f"impact {(res.price_impact_pct or 0):.1%}  liq "
+                  f"${view.market.liquidity_usd or 0:,.0f}  {tail}")
+
     cycle = 0
     try:
         while args.max_cycles == 0 or cycle < args.max_cycles:
             cycle += 1
-
-            # 1) manage exits on what we hold
-            for mint in list(holdings):
-                h = holdings[mint]
-                val = sell_value_sol(mint, h.tokens, jupiter.DEFAULT_BASE, slippage_bps)
-                if val is None:  # lost the sell route => trapped; flag it
-                    print(f"[TRAP ] {h.symbol:<10} no sell route now (honeypot realized)")
-                    continue
-                if val >= args.take_profit * h.sol_in or val <= args.stop * h.sol_in:
-                    res = execer.sell(mint, h.tokens)
-                    got = res.out_amount / LAMPORTS_PER_SOL if res.ok else val
-                    realized_sol += got
-                    pnl = got - h.sol_in
-                    tag = "TP" if val >= args.take_profit * h.sol_in else "SL"
-                    print(f"[SELL {tag}] {h.symbol:<10} {h.sol_in:.4f}->{got:.4f} SOL "
-                          f"({pnl:+.4f})  {'sent '+ (res.signature or '') if res.ok and not res.dry_run else res.reason}")
-                    del holdings[mint]
-
-            # 2) look for new entries within budget
-            if committed_sol + args.per_trade_sol <= args.budget_sol + 1e-9:
-                for view, decision in scanner.scan_once():
-                    if not decision.enter or view.mint in holdings:
-                        continue
-                    if committed_sol + args.per_trade_sol > args.budget_sol + 1e-9:
-                        break
-                    res = execer.buy(view.mint, args.per_trade_sol)
-                    if not res.ok:
-                        print(f"[skip ] {view.symbol:<10} {res.reason}")
-                        continue
-                    committed_sol += res.sol_in
-                    holdings[view.mint] = Holding(view.mint, view.symbol,
-                                                  res.sol_in, res.out_amount)
-                    sent = (res.signature or "sent") if not res.dry_run else "would buy"
-                    print(f"[BUY  ] {view.symbol:<10} {res.sol_in:.4f} SOL  "
-                          f"impact {(res.price_impact_pct or 0):.1%}  liq "
-                          f"${view.market.liquidity_usd or 0:,.0f}  {sent}")
-
+            manage_exits()
+            scan_for_entries()
             print(f"  cycle {cycle}: holding {len(holdings)}, committed "
-                  f"{committed_sol:.3f} SOL, realized {realized_sol:+.4f} SOL")
+                  f"{committed():.3f} SOL, realized {realized_sol:+.4f} SOL")
+            # Keep watching exits at the faster cadence between scans.
             if args.max_cycles == 0 or cycle < args.max_cycles:
-                time.sleep(args.interval)
+                waited = 0.0
+                while waited < args.interval:
+                    time.sleep(args.exit_interval)
+                    waited += args.exit_interval
+                    manage_exits()
     except http.SourceError as e:
         print(f"\n  Data source unreachable: {e}", file=sys.stderr)
         print("  Run on your VPS — these APIs are blocked in the sandbox.",
               file=sys.stderr)
         sys.exit(2)
     except KeyboardInterrupt:
-        print("\n  Stopped.")
+        print("\n  Stopped. Open positions saved to", args.state_file)
 
-    open_cost = sum(h.sol_in for h in holdings.values())
-    pnl = realized_sol - (committed_sol - open_cost)
+    open_cost = committed()
     print("\n" + "-" * 62)
-    print(f"  committed {committed_sol:.4f} SOL | realized {realized_sol:.4f} SOL "
-          f"| still holding {len(holdings)} (${open_cost:.4f} SOL cost)")
-    print(f"  realized P&L on closed trades: {pnl:+.4f} SOL")
+    print(f"  realized {realized_sol:.4f} SOL | still holding {len(holdings)} "
+          f"({open_cost:.4f} SOL cost) | state in {args.state_file}")
     print("-" * 62)
 
 

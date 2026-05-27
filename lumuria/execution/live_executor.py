@@ -21,6 +21,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+import time
 from dataclasses import dataclass
 
 from ..sources import http, jupiter, solana_rpc
@@ -37,6 +38,9 @@ class ExecConfig:
     budget_sol: float = 1.0
     max_position_sol: float = 0.05
     slippage_bps: int = 500
+    confirm: bool = True              # wait for on-chain confirmation
+    confirm_timeout_s: float = 30.0
+    confirm_poll_s: float = 2.0
 
 
 @dataclass
@@ -153,10 +157,36 @@ class SwapExecutor:
                               sol_in=sol_in, out_amount=out_amount,
                               price_impact_pct=impact)
 
+        if cfg.confirm and not self._confirm(sig):
+            # Unconfirmed: do NOT record a holding we may not actually own.
+            return ExecResult(action, mint, False, False, "not confirmed in time",
+                              sol_in=sol_in, out_amount=out_amount,
+                              price_impact_pct=impact, signature=sig)
+
         if action == "buy":
             self.spent_sol += sol_in
-        return ExecResult(action, mint, True, False, "sent", sol_in=sol_in,
+        return ExecResult(action, mint, True, False, "confirmed", sol_in=sol_in,
                           out_amount=out_amount, price_impact_pct=impact, signature=sig)
+
+    def _confirm(self, signature: str) -> bool:
+        cfg = self.config
+        deadline = time.monotonic() + cfg.confirm_timeout_s
+        while time.monotonic() < deadline:
+            try:
+                st = solana_rpc.get_signature_status(signature, cfg.rpc_url)
+            except http.SourceError:
+                st = None
+            if st and st.found:
+                return st.confirmed and st.err is None
+            time.sleep(cfg.confirm_poll_s)
+        return False
+
+    def pubkey(self) -> str:
+        self._load_keypair()
+        return self._pubkey or ""
+
+    def token_balance(self, mint: str) -> int:
+        return solana_rpc.get_token_balance(self.pubkey(), mint, self.config.rpc_url)
 
     def _sign_and_send(self, swap_b64: str) -> str:
         from solders.transaction import VersionedTransaction
