@@ -10,8 +10,10 @@ file the live bot can load with --brain. No network, no money.
 from __future__ import annotations
 
 import argparse
+import os
 
 from lumuria.evolution import describe, evolve, save_brain
+from lumuria.realtime.journal import TradeJournal
 
 
 def main() -> None:
@@ -22,18 +24,29 @@ def main() -> None:
     ap.add_argument("--seeds", type=int, nargs="+", default=[7, 99, 2024, 555])
     ap.add_argument("--min-trades", type=int, default=60,
                     help="min total trades a genome must take to be viable")
+    ap.add_argument("--journal", nargs="*", default=["lumuria_trades.jsonl"],
+                    help="real trade journals folded into fitness (any machine)")
     ap.add_argument("--out", default="brain.json")
     args = ap.parse_args()
+
+    real_records: list[dict] = []
+    for path in args.journal:
+        if os.path.exists(path):
+            rows = TradeJournal(path).feature_records()
+            real_records.extend(rows)
 
     print("=" * 60)
     print("  LUMURIA TURBOBOT — evolving in the cruel market")
     print(f"  {args.generations} generations x {args.pop} genomes "
           f"x {len(args.seeds)} seeds")
+    if real_records:
+        print(f"  + {len(real_records)} REAL closed trades steering fitness")
     print("=" * 60)
 
     best, fit, history, (pnl, trades) = evolve(
         generations=args.generations, pop_size=args.pop, seeds=tuple(args.seeds),
-        tokens=args.tokens, min_total_trades=args.min_trades)
+        tokens=args.tokens, min_total_trades=args.min_trades,
+        real_records=real_records)
 
     print("\n  learning curve (best true value per generation):")
     for i, h in enumerate(history, 1):
@@ -51,7 +64,8 @@ def main() -> None:
     print(f"  verdict: {verdict}")
 
     save_brain(best, args.out, meta={"fitness": fit, "trades": trades,
-                                     "seeds": args.seeds})
+                                     "seeds": args.seeds,
+                                     "real_trades_folded": len(real_records)})
     print(f"\n  saved brain -> {args.out}  (load it live with: live.py --brain {args.out})")
 
 

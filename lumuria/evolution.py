@@ -22,8 +22,11 @@ across independent seed markets (dispersion is penalised) and must be
 survivable (drawdown is penalised). A genome that wins big on one seed and
 dies on another is worth little, and is scored accordingly.
 
-Re-running this as real trades accumulate (folding the journal into the seeds)
-is how the bot keeps evolving with the real market.
+Folding real trades in is implemented, not promised: pass the live journal's
+feature records (`real_records`) and every genome is ALSO judged on what it
+would have done with the trades that really happened — kept the real winners,
+skipped the real losers (`real_fitness`). Real evidence is weighted per trade,
+so as the journal grows it progressively outweighs the simulation.
 """
 from __future__ import annotations
 
@@ -76,6 +79,11 @@ POSITION_USD = 50.0
 # was luck, and profit that rides deep drawdowns won't survive a real bankroll.
 LUCK_PENALTY = 1.0       # per USD of cross-seed P&L standard deviation
 DRAWDOWN_PENALTY = 0.25  # per USD of mean max drawdown
+
+# Real evidence: one R captured (or dodged) on a REAL trade counts like this
+# many USD of simulated profit (~a 0.30 stop on a $50 position). Linear in the
+# journal size, so real data outgrows the simulation as trades accumulate.
+REAL_R_USD = 15.0
 
 
 @dataclass
@@ -157,17 +165,41 @@ def evaluate(g: Genome, markets: dict[int, list], *,
     return (robust_fitness(pnls, drawdowns), mean_pnl, total_trades)
 
 
+def entry_takes(g: Genome, r: dict) -> bool:
+    """Would this genome's entry gates have taken this (real) trade?
+    Defaults mirror token_features(): a missing value is what live recorded."""
+    return (r.get("liquidity", 0.0) >= g.min_liquidity
+            and r.get("holders", 0) >= g.min_holders
+            and r.get("top_holder", 0.0) <= g.max_top_holder)
+
+
+def real_fitness(g: Genome, records: list[dict]) -> tuple[float, int]:
+    """Judge the entry genes against REAL closed trades: the total R this
+    genome would have captured — it keeps the R of real winners it accepts
+    and dodges the negative R of real losers it filters out."""
+    taken = [r for r in records if entry_takes(g, r)]
+    return sum(r.get("pnl_r", 0.0) for r in taken), len(taken)
+
+
 def _tournament(scored: list[tuple[float, Genome]], rng: random.Random,
                 k: int = 3) -> Genome:
     return max(rng.sample(scored, min(k, len(scored))), key=lambda x: x[0])[1]
 
 
 def evolve(*, generations: int = 12, pop_size: int = 24, seeds=(7, 99, 2024, 555),
-           tokens: int = 1500, rng_seed: int = 0, min_total_trades: int = 60):
-    """Run the GA. Returns (best_genome, best_fitness, history, best_detail)."""
+           tokens: int = 1500, rng_seed: int = 0, min_total_trades: int = 60,
+           real_records: list[dict] | None = None, real_weight: float = REAL_R_USD,
+           min_real_sample: int = 20):
+    """Run the GA. Returns (best_genome, best_fitness, history, best_detail).
+
+    With `real_records` (journal feature rows from any machine), each genome's
+    fitness also includes the real R it would have captured, at `real_weight`
+    USD per R — the journal steering evolution, not just the simulation.
+    """
     rng = random.Random(rng_seed)
     markets = {s: SimulatedFeed(n=tokens, seed=s, cruel=True).materialize()
                for s in seeds}
+    use_real = bool(real_records) and len(real_records) >= min_real_sample
     pop = [random_genome(rng) for _ in range(pop_size)]
     elite = max(2, pop_size // 5)
     best: tuple[float, Genome] = (float("-inf"), pop[0])
@@ -178,6 +210,8 @@ def evolve(*, generations: int = 12, pop_size: int = 24, seeds=(7, 99, 2024, 555
         scored = []
         for g in pop:
             fit, pnl, n = evaluate(g, markets, min_total_trades=min_total_trades)
+            if use_real:
+                fit += real_weight * real_fitness(g, real_records)[0]
             scored.append((fit, g))
             if fit > best[0]:
                 best, best_detail = (fit, g), (pnl, n)

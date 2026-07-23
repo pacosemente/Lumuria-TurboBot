@@ -148,6 +148,18 @@ def test_jupiter_quote_ok_and_noroute():
     assert not jupiter.parse_quote({}).route_exists
 
 
+def test_sol_price_comes_from_a_real_quote():
+    orig = jupiter.fetch_quote
+    try:
+        jupiter.fetch_quote = lambda *a, **k: jupiter.Quote(
+            route_exists=True, out_amount=182_500_000)  # 1 SOL -> 182.50 USDC
+        assert abs(jupiter.fetch_sol_price_usd() - 182.50) < 1e-9
+        jupiter.fetch_quote = lambda *a, **k: jupiter.Quote(route_exists=False)
+        assert jupiter.fetch_sol_price_usd() is None
+    finally:
+        jupiter.fetch_quote = orig
+
+
 # --------------------------------------------------------------------------
 # Decision engine
 # --------------------------------------------------------------------------

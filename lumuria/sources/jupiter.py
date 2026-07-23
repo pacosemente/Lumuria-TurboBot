@@ -20,6 +20,7 @@ DEFAULT_BASE = "https://lite-api.jup.ag/swap/v1"  # free tier, no key
 USDC = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
 SOL = "So11111111111111111111111111111111111111112"
 USDC_DECIMALS = 6
+LAMPORTS_PER_SOL = 1_000_000_000
 
 
 @dataclass
@@ -117,6 +118,15 @@ def fetch_swap_transaction(
         "prioritizationFeeLamports": priority_lamports,
     })
     return (payload or {}).get("swapTransaction")
+
+
+def fetch_sol_price_usd(base_url: str = DEFAULT_BASE) -> float | None:
+    """The REAL price of SOL right now, from a live 1 SOL -> USDC quote
+    (read-only, nothing is sent). None if no quote came back."""
+    q = fetch_quote(SOL, USDC, LAMPORTS_PER_SOL, base_url=base_url)
+    if not q.route_exists or q.out_amount <= 0:
+        return None
+    return q.out_amount / (10 ** USDC_DECIMALS)
 
 
 def roundtrip_usdc(

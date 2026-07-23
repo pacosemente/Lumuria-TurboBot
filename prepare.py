@@ -9,10 +9,24 @@ save the brain the live bot will run. One command to get training done.
 from __future__ import annotations
 
 import argparse
+import os
 
 from lumuria import profiles
 from lumuria.evolution import describe, evolve, save_brain
 from lumuria.explore import analyze, explore
+from lumuria.realtime.journal import TradeJournal
+
+
+def load_real_records(paths: list[str]) -> list[dict]:
+    """Merge the real journals of every machine that has one (local, any VPS)."""
+    records: list[dict] = []
+    for path in paths:
+        if not os.path.exists(path):
+            continue
+        rows = TradeJournal(path).feature_records()
+        records.extend(rows)
+        print(f"  real journal {path}: {len(rows)} closed trades folded in")
+    return records
 
 
 def main() -> None:
@@ -23,6 +37,9 @@ def main() -> None:
                     help="machine profile: training depth scaled to hardware")
     ap.add_argument("--quick", action="store_true",
                     help="shortcut for --profile local")
+    ap.add_argument("--journal", nargs="*", default=["lumuria_trades.jsonl"],
+                    help="real trade journals to fold into evolution "
+                         "(drop in the files from every machine)")
     args = ap.parse_args()
 
     prof = profiles.get("local" if args.quick else args.profile)
@@ -43,14 +60,19 @@ def main() -> None:
               f"(+{rec.improvement_r:.2f} R)")
 
     print(f"\n[2/2] EVOLVE: breeding a strategy to survive ({gens} gens x {pop})...")
+    real_records = load_real_records(args.journal)
+    if not real_records:
+        print("  no real journals found yet — evolving on simulation only")
     best, fit, history, (pnl, trades) = evolve(generations=gens, pop_size=pop,
-                                               tokens=tokens)
+                                               tokens=tokens,
+                                               real_records=real_records)
     for i, h in enumerate(history, 1):
         shown = f"{h:+.0f}" if h > -1e8 else "infeasible"
         print(f"    gen {i:>2}: best true value {shown}")
 
     save_brain(best, args.out, meta={"fitness": fit, "trades": trades,
-                                     "profile": prof.name})
+                                     "profile": prof.name,
+                                     "real_trades_folded": len(real_records)})
     print("\n  evolved brain (every gene has a live meaning):")
     for gene, value, meaning in describe(best):
         print(f"    {gene:<16} {value:>8}  {meaning}")

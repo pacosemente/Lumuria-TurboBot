@@ -139,6 +139,8 @@ def main() -> None:
                    help="required acknowledgement for --live")
     p.add_argument("--budget-sol", type=float, default=1.0)
     p.add_argument("--per-trade-sol", type=float, default=0.05)
+    p.add_argument("--sol-price-fallback", type=float, default=150.0,
+                   help="USD per SOL only if the live Jupiter quote is unreachable")
     # Exit = trailing stop (what the bot learned wins). A brain overrides these.
     p.add_argument("--stop", type=float, default=0.30, help="hard stop fraction (-30%%)")
     p.add_argument("--arm", type=float, default=0.20, help="profit before the trail arms")
@@ -206,8 +208,20 @@ def main() -> None:
     if brain:  # every entry gene the brain evolved gates real entries
         decision_cfg.max_top_holder_pct = brain.max_top_holder
         decision_cfg.min_holders = brain.min_holders
+    # Size positions with the REAL SOL price, not a guessed constant: the USD
+    # size drives every impact/slippage estimate the decision engine makes.
+    try:
+        sol_usd = jupiter.fetch_sol_price_usd()
+    except http.SourceError:
+        sol_usd = None
+    if sol_usd:
+        print(f"  SOL price: ${sol_usd:,.2f} (live Jupiter quote)")
+    else:
+        sol_usd = args.sol_price_fallback
+        print(f"  SOL price: ${sol_usd:,.2f} (FALLBACK — no live quote; "
+              f"override with --sol-price-fallback)")
     scanner = Scanner(ScannerConfig(
-        position_usd=args.per_trade_sol * 150,
+        position_usd=args.per_trade_sol * sol_usd,
         rpc_url=rpc, slippage_bps=slippage_bps, decision=decision_cfg,
     ))
     try:
