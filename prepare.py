@@ -9,6 +9,7 @@ save the brain the live bot will run. One command to get training done.
 from __future__ import annotations
 
 import argparse
+import glob
 import os
 
 from lumuria import profiles
@@ -37,10 +38,13 @@ def main() -> None:
                     help="machine profile: training depth scaled to hardware")
     ap.add_argument("--quick", action="store_true",
                     help="shortcut for --profile local")
-    ap.add_argument("--journal", nargs="*", default=["lumuria_trades.jsonl"],
-                    help="real trade journals to fold into evolution "
-                         "(drop in the files from every machine)")
+    ap.add_argument("--journal", nargs="*", default=None,
+                    help="real trade journals to fold into evolution (default: "
+                         "lumuria_trades.jsonl + journals/*.jsonl from every "
+                         "machine that ran sync_journal.sh)")
     args = ap.parse_args()
+    if args.journal is None:
+        args.journal = ["lumuria_trades.jsonl"] + sorted(glob.glob("journals/*.jsonl"))
 
     prof = profiles.get("local" if args.quick else args.profile)
     tokens, gens, pop = prof.tokens, prof.generations, prof.pop_size

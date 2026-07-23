@@ -5,6 +5,13 @@ venv/
 .env
 *.log
 
+# secrets — never in git (setup_vps.sh writes lumuria.env with the Telegram
+# token; keypairs sign real funds)
+lumuria.env
+*.env
+bot-key.json
+*keypair*.json
+
 # runtime artifacts (generated per deployment, not source)
 brain.json
 lumuria_state.json

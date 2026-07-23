@@ -10,6 +10,7 @@ file the live bot can load with --brain. No network, no money.
 from __future__ import annotations
 
 import argparse
+import glob
 import os
 
 from lumuria.evolution import describe, evolve, save_brain
@@ -24,10 +25,13 @@ def main() -> None:
     ap.add_argument("--seeds", type=int, nargs="+", default=[7, 99, 2024, 555])
     ap.add_argument("--min-trades", type=int, default=60,
                     help="min total trades a genome must take to be viable")
-    ap.add_argument("--journal", nargs="*", default=["lumuria_trades.jsonl"],
-                    help="real trade journals folded into fitness (any machine)")
+    ap.add_argument("--journal", nargs="*", default=None,
+                    help="real trade journals folded into fitness (default: "
+                         "lumuria_trades.jsonl + journals/*.jsonl)")
     ap.add_argument("--out", default="brain.json")
     args = ap.parse_args()
+    if args.journal is None:
+        args.journal = ["lumuria_trades.jsonl"] + sorted(glob.glob("journals/*.jsonl"))
 
     real_records: list[dict] = []
     for path in args.journal:
