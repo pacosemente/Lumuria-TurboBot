@@ -2,31 +2,37 @@
 """Prepare the offline path: study the cruel market, evolve a strategy, and
 save the brain the live bot will run. One command to get training done.
 
-    python3 prepare.py                 # study + evolve + save brain.json
-    python3 prepare.py --quick         # faster, smaller run
+    python3 prepare.py                    # auto-sizes to this machine
+    python3 prepare.py --profile small    # 1 vCPU VPS
+    python3 prepare.py --quick            # fast local run (same as --profile local)
 """
 from __future__ import annotations
 
 import argparse
-from dataclasses import asdict
 
-from lumuria.evolution import evolve, save_brain
+from lumuria import profiles
+from lumuria.evolution import describe, evolve, save_brain
 from lumuria.explore import analyze, explore
 
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--out", default="brain.json")
-    ap.add_argument("--quick", action="store_true")
+    ap.add_argument("--profile", default="auto",
+                    choices=["auto", "local", "small", "medium", "large"],
+                    help="machine profile: training depth scaled to hardware")
+    ap.add_argument("--quick", action="store_true",
+                    help="shortcut for --profile local")
     args = ap.parse_args()
 
-    tokens = 1200 if args.quick else 2500
-    gens = 8 if args.quick else 15
-    pop = 16 if args.quick else 28
+    prof = profiles.get("local" if args.quick else args.profile)
+    tokens, gens, pop = prof.tokens, prof.generations, prof.pop_size
 
     print("=" * 62)
     print("  LUMURIA TURBOBOT — preparing (offline learning pipeline)")
     print("=" * 62)
+    print(f"  profile: {prof.name} — {prof.label}")
+    print(f"           {tokens} tokens x {gens} generations x {pop} genomes")
 
     print("\n[1/2] STUDY: entering every token to learn what to avoid...")
     study = analyze(explore(tokens=tokens))
@@ -41,14 +47,16 @@ def main() -> None:
                                                tokens=tokens)
     for i, h in enumerate(history, 1):
         shown = f"{h:+.0f}" if h > -1e8 else "infeasible"
-        print(f"    gen {i:>2}: best mean P&L {shown}")
+        print(f"    gen {i:>2}: best true value {shown}")
 
-    save_brain(best, args.out, meta={"fitness": fit, "trades": trades})
-    print("\n  evolved brain:")
-    for k, v in asdict(best).items():
-        print(f"    {k:<16} {v}")
+    save_brain(best, args.out, meta={"fitness": fit, "trades": trades,
+                                     "profile": prof.name})
+    print("\n  evolved brain (every gene has a live meaning):")
+    for gene, value, meaning in describe(best):
+        print(f"    {gene:<16} {value:>8}  {meaning}")
     ready = fit > 0
-    print(f"\n  fitness {fit:+.0f} over {trades} trades -> "
+    print(f"\n  true value {fit:+.0f} (mean P&L - luck spread - drawdown tax) "
+          f"over {trades} trades -> "
           f"{'survives the cruel market' if ready else 'still negative'}")
     print(f"  saved -> {args.out}")
     print("\n  Next: validate on REAL data (dry-run), then study the real journal:")

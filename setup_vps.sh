@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
-# Lumuria TurboBot — VPS setup. Run on a fresh Ubuntu/Debian VPS.
+# Lumuria TurboBot — VPS setup. Run on a fresh Ubuntu/Debian VPS of ANY size:
+# training depth and live cadence auto-scale to the machine (small/medium/
+# large profile, detected from CPU + RAM). Override with PROFILE=small etc.
 #
-#   bash setup_vps.sh                  # install, test, train a brain
+#   bash setup_vps.sh                   # install, test, train a brain (auto profile)
+#   PROFILE=small bash setup_vps.sh     # force the small-VPS profile
 #   bash setup_vps.sh --install-service # also install a 24/7 auto-restart service
 #
 # This NEVER trades real money on its own: the installed service runs DRY-RUN.
@@ -11,6 +14,7 @@ set -euo pipefail
 REPO="${REPO:-https://github.com/pacosemente/lumuria-turbobot.git}"
 BRANCH="${BRANCH:-claude/github-folder-contents-aTXps}"
 DIR="${DIR:-$HOME/lumuria-turbobot}"
+PROFILE="${PROFILE:-auto}"
 
 echo "==> [1/6] system packages (python3, pip, venv, git)"
 if command -v apt-get >/dev/null; then
@@ -39,8 +43,8 @@ done
 echo "   tests: $ok ok, $fail failed"
 [ "$fail" -eq 0 ] || { echo "   aborting: fix failing tests first"; exit 1; }
 
-echo "==> [5/6] offline training (study + evolve -> brain.json)"
-python3 prepare.py --quick || echo "   (training skipped/failed; you can run prepare.py later)"
+echo "==> [5/6] offline training (study + evolve -> brain.json, profile: $PROFILE)"
+python3 prepare.py --profile "$PROFILE" || echo "   (training skipped/failed; you can run prepare.py later)"
 
 echo "==> [6/6] env template"
 if [ ! -f lumuria.env ]; then
@@ -65,6 +69,7 @@ After=network-online.target
 WorkingDirectory=$DIR
 EnvironmentFile=$DIR/lumuria.env
 ExecStart=$DIR/.venv/bin/python $DIR/live.py --brain $DIR/brain.json \\
+  --profile $PROFILE \\
   --rpc-url \${RPC_URL} --min-liquidity 30000 --state-file $DIR/lumuria_state.json \\
   --journal-file $DIR/lumuria_trades.jsonl
 Restart=always

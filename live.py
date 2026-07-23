@@ -29,6 +29,7 @@ import os
 import sys
 import time
 
+from lumuria import profiles
 from lumuria.execution.live_executor import ExecConfig, SwapExecutor, LAMPORTS_PER_SOL
 from lumuria.explore import token_features
 from lumuria.models import Position
@@ -150,8 +151,13 @@ def main() -> None:
                    help="Jupiter priority fee; higher lands faster ('auto' or an int)")
     p.add_argument("--skip-preflight", action="store_true",
                    help="skip RPC preflight on send (faster; we already simulate)")
-    p.add_argument("--interval", type=float, default=25.0, help="seconds between new-token scans")
-    p.add_argument("--exit-interval", type=float, default=5.0, help="seconds between exit checks")
+    p.add_argument("--profile", default="auto",
+                   choices=["auto", "local", "small", "medium", "large"],
+                   help="machine profile setting the scan cadence (auto-detects)")
+    p.add_argument("--interval", type=float, default=None,
+                   help="seconds between new-token scans (default: from --profile)")
+    p.add_argument("--exit-interval", type=float, default=None,
+                   help="seconds between exit checks (default: from --profile)")
     p.add_argument("--max-cycles", type=int, default=0)
     p.add_argument("--rpc-url", default="")
     p.add_argument("--state-file", default="lumuria_state.json")
@@ -169,14 +175,20 @@ def main() -> None:
     if args.selfcheck:
         sys.exit(run_selfcheck(args))
 
+    profile = profiles.get(args.profile)
+    if args.interval is None:
+        args.interval = profile.scan_interval
+    if args.exit_interval is None:
+        args.exit_interval = profile.exit_interval
+
     brain = None
     if args.brain:
-        from lumuria.evolution import load_brain
+        from lumuria.evolution import describe, load_brain
         brain = load_brain(args.brain)
         args.min_liquidity = brain.min_liquidity
-        print(f"  loaded brain {args.brain}: min-liquidity ${brain.min_liquidity:,.0f}, "
-              f"max top holder {brain.max_top_holder:.0%}, "
-              f"learned trailing stop{brain.stop:.0%}/arm{brain.arm:.0%}/trail{brain.trail:.0%}")
+        print(f"  loaded brain {args.brain} — every gene applied live:")
+        for gene, value, meaning in describe(brain):
+            print(f"    {gene:<16} {value:>8}  {meaning}")
 
     if args.live and not (args.keypair and args.i_understand_real_funds):
         print("Refusing --live without --keypair and --i-understand-real-funds.",
@@ -191,8 +203,9 @@ def main() -> None:
     slippage_bps = int(args.max_slippage * 10_000)
     decision_cfg = DecisionConfig(min_liquidity_usd=args.min_liquidity,
                                   max_slippage_pct=args.max_slippage)
-    if brain:
+    if brain:  # every entry gene the brain evolved gates real entries
         decision_cfg.max_top_holder_pct = brain.max_top_holder
+        decision_cfg.min_holders = brain.min_holders
     scanner = Scanner(ScannerConfig(
         position_usd=args.per_trade_sol * 150,
         rpc_url=rpc, slippage_bps=slippage_bps, decision=decision_cfg,
@@ -245,6 +258,8 @@ def main() -> None:
     print(f"  LUMURIA TURBOBOT — live operation  [{mode}]")
     print(f"  budget {args.budget_sol} SOL | per trade {args.per_trade_sol} SOL "
           f"| trailing stop{t_stop:.0%}/arm{t_arm:.0%}/trail{t_trail:.0%}")
+    print(f"  profile: {profile.name} ({profile.label}) — scan every "
+          f"{args.interval:.0f}s, exits every {args.exit_interval:.0f}s")
     if holdings:
         print(f"  resumed with {len(holdings)} open position(s) from {args.state_file}")
     print(f"  telegram: {'on' if notifier.enabled else 'off'}")

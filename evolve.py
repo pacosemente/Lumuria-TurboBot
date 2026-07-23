@@ -10,9 +10,8 @@ file the live bot can load with --brain. No network, no money.
 from __future__ import annotations
 
 import argparse
-from dataclasses import asdict
 
-from lumuria.evolution import evolve, save_brain
+from lumuria.evolution import describe, evolve, save_brain
 
 
 def main() -> None:
@@ -36,16 +35,17 @@ def main() -> None:
         generations=args.generations, pop_size=args.pop, seeds=tuple(args.seeds),
         tokens=args.tokens, min_total_trades=args.min_trades)
 
-    print("\n  learning curve (best mean P&L per generation):")
+    print("\n  learning curve (best true value per generation):")
     for i, h in enumerate(history, 1):
         bar = "#" * max(0, int(h / 50)) if h > 0 else ""
         shown = f"{h:+.1f}" if h > -1e8 else "infeasible"
         print(f"    gen {i:>2}: {shown:>12}  {bar}")
 
-    print("\n  best evolved brain:")
-    for k, v in asdict(best).items():
-        print(f"    {k:<16} {v}")
-    print(f"\n  fitness (mean P&L/seed): {fit:+.1f}  over {trades} trades total")
+    print("\n  best evolved brain (every gene has a live meaning):")
+    for gene, value, meaning in describe(best):
+        print(f"    {gene:<16} {value:>8}  {meaning}")
+    print(f"\n  true value: {fit:+.1f} (mean P&L - luck spread - drawdown tax) "
+          f"over {trades} trades total")
     verdict = "survives the cruel market (positive)" if fit > 0 \
         else "still negative — the cruel market wins at this volume"
     print(f"  verdict: {verdict}")

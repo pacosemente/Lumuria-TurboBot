@@ -8,10 +8,9 @@ accumulates (e.g. weekly, or on a schedule).
 from __future__ import annotations
 
 import argparse
-from dataclasses import asdict
 
 from lumuria.adapt import adapt_brain
-from lumuria.evolution import load_brain, save_brain
+from lumuria.evolution import describe, load_brain, save_brain
 from lumuria.realtime.journal import TradeJournal
 
 
@@ -39,14 +38,15 @@ def main() -> None:
     print("  the bot learned from real trades and wants to tighten:")
     for c in changes:
         print(f"    - {c}")
-    print("\n  new brain:")
-    for k, v in asdict(new_brain).items():
-        print(f"    {k:<16} {v}")
+    print("\n  new brain (every gene has a live meaning):")
+    for gene, value, meaning in describe(new_brain):
+        print(f"    {gene:<16} {value:>8}  {meaning}")
     if args.dry_run:
         print("\n  --dry-run: not saved.")
     else:
         save_brain(new_brain, args.brain, meta={"adapted_from": args.journal,
-                                                "real_trades": len(records)})
+                                                "real_trades": len(records),
+                                                "changes": changes})
         print(f"\n  saved -> {args.brain}. Restart live.py to use the evolved brain.")
 
 

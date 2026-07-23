@@ -23,6 +23,7 @@ class Category(str, Enum):
 @dataclass
 class DecisionConfig:
     min_liquidity_usd: float = 10_000.0
+    min_holders: int = 0                    # 0 = off; an evolved brain sets this
     max_slippage_pct: float = 0.10          # per-side and round-trip ceiling
     max_top_holder_pct: float = 0.20
     max_top10_pct: float = 0.60
@@ -83,6 +84,15 @@ def evaluate(view: TokenView, config: DecisionConfig, position_usd: float) -> De
             block(Category.UNVERIFIED, "liquidity unknown")
     elif liq < config.min_liquidity_usd:
         block(Category.LIQUIDITY, f"low liquidity (${liq:,.0f})")
+
+    # --- crowd size (the brain's min_holders gene) ------------------------
+    if config.min_holders > 0:
+        hc = view.holders.count
+        if hc is None:
+            if config.block_on_unknown:
+                block(Category.UNVERIFIED, "holder count unknown")
+        elif hc < config.min_holders:
+            block(Category.LIQUIDITY, f"few holders ({hc})")
 
     # --- honeypot: freeze authority + Token-2022 extensions --------------
     a = view.authorities

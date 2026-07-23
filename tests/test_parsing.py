@@ -263,6 +263,31 @@ def test_unverified_data_blocks_by_default():
     assert d.by_category(Category.UNVERIFIED)
 
 
+def test_min_holders_gene_gates_live_entries():
+    cfg = DecisionConfig(min_holders=100)
+    assert evaluate(_clean_view(), cfg, position_usd=50).enter  # 540 holders
+
+    v = _clean_view()
+    v.holders.count = 40
+    d = evaluate(v, cfg, position_usd=50)
+    assert not d.enter
+    assert any("few holders" in r for r in d.by_category(Category.LIQUIDITY))
+
+
+def test_min_holders_unknown_count_is_unverified():
+    v = _clean_view()
+    v.holders.count = None
+    d = evaluate(v, DecisionConfig(min_holders=100), position_usd=50)
+    assert not d.enter
+    assert any("holder count" in r for r in d.by_category(Category.UNVERIFIED))
+
+
+def test_min_holders_off_by_default():
+    v = _clean_view()
+    v.holders.count = None  # no gene set -> unknown count must not block
+    assert evaluate(v, DecisionConfig(), position_usd=50).enter
+
+
 if __name__ == "__main__":
     import traceback
 
